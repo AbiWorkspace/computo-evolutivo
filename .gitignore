@@ -1,0 +1,24 @@
+# Bytecode de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+
+# Logs y salidas de ejecución
+*.log
+
+# IDEs
+.idea/
+.vscode/
+
+# Sistema operativo
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Archivos temporales de Office
+~$*
