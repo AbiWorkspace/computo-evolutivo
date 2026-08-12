@@ -1191,13 +1191,14 @@ class GeneracionDistribMixin:
             "M": [10, 9, 9, 8],
             "L": [12, 11, 11, 10],
         }
-        # Volumen total (series) levemente decreciente
-        target_series = [16, 15, 14, 13]
+        # Volumen: banda decreciente, no un número exacto (ver
+        # `_encajar_series_en_banda`). La tendencia a la baja se mantiene, pero
+        # el AG puede elegir dónde situarse dentro de cada semana.
+        banda_series = [(13, 18), (12, 17), (12, 16), (11, 15)]
 
         for i, s in enumerate(semanas):
             self._ajustar_roles_a_objetivos(s, targets_pct, targets_reps, semana_idx=i+1, fase="hipertrofia")
-            # Suaviza series hacia target (±1 o ±2 como mucho)
-            self._ajustar_series_hacia(s, target_series[i], max_mov=2)
+            self._encajar_series_en_banda(s, *banda_series[i], max_mov=2)
 
     # ─────────────────────────────────────────────────────────────────────────────
     # FUERZA (W5–W8): DUP garantizado, % ascendente, reps descendentes (L 4–6)
@@ -1218,12 +1219,12 @@ class GeneracionDistribMixin:
             "M": [5, 4, 4, 3],
             "L": [6, 5, 5, 4],
         }
-        target_series = [13, 12, 12, 11]
+        banda_series = [(11, 14), (10, 14), (10, 13), (9, 12)]
 
         for i, s in enumerate(semanas, start=5):
             self._forzar_minimos_y_gaps_por_rol(s)
             self._ajustar_roles_a_objetivos(s, targets_pct, targets_reps, semana_idx=i, fase="fuerza")
-            self._ajustar_series_hacia(s, target_series[i-5], max_mov=2)
+            self._encajar_series_en_banda(s, *banda_series[i-5], max_mov=2)
             # >>> NUEVO: asegurar orden canónico y rpe por rol
             self._canonizar_orden_hml(s)
             self._ordenar_rpe_por_rol(s)
@@ -1244,12 +1245,12 @@ class GeneracionDistribMixin:
                 "M": [2, 2, 1],   # 5×2→4×1–2
                 "L": [2, 2, 2],   # 6×2 @60–65 (se fija abajo)
             }
-            target_series_pico = [10, 8, 7]
+            banda_series_pico = [(8, 11), (7, 10), (6, 9)]
 
             for k, s in enumerate(semanas_pico, start=9):
                 self._ajustar_roles_a_objetivos(s, targets_pct_pico, targets_reps_pico, semana_idx=k, fase="pico")
                 self._fijar_velocidad_L(s, prefer_sets=6)           # L = 6×2 @60–65, RPE 6–7
-                self._ajustar_series_hacia(s, target_series_pico[k-9], max_mov=2)
+                self._encajar_series_en_banda(s, *banda_series_pico[k-9], max_mov=2)
                 self._forzar_minimos_y_gaps_por_rol(s)
                 self._validar_coherencia_rir_rpe(s, k-1)
 
@@ -1258,8 +1259,13 @@ class GeneracionDistribMixin:
             w12 = plan.semanas[11]
             w11 = plan.semanas[10]
 
-            objetivo_series = int(round(w11.series * 0.50))  # dentro de 40–60%
-            self._redistribuir_a_total(w12, objetivo_series)
+            # Taper: banda 40–60 % del volumen de W11 (antes se clavaba al 50 %).
+            lo_w12 = max(4, int(round(w11.series * 0.40)))
+            hi_w12 = max(lo_w12, int(round(w11.series * 0.60)))
+            if not (lo_w12 <= int(w12.series) <= hi_w12):
+                self._redistribuir_a_total(
+                    w12, lo_w12 if int(w12.series) < lo_w12 else hi_w12
+                )
             self._ajustar_sesiones_taper(w12)
 
             try:
@@ -1769,6 +1775,30 @@ class GeneracionDistribMixin:
             self._sync_semana(cur, w)
 
 
+
+    def _encajar_series_en_banda(self, s, lo: int, hi: int, max_mov: int = 2) -> None:
+        """
+        Deja el volumen semanal DENTRO de [lo, hi] y no lo toca si ya lo está.
+
+        Por qué existe: las microtendencias por bloque llamaban a
+        `_ajustar_series_hacia` con un número exacto (16, 15, 14, 13...), y como
+        la reparación corre después de cada cruce y cada mutación, el volumen de
+        toda la población convergía siempre al mismo perfil. El resultado era que
+        el número total de series salía idéntico (137) en todas las semillas y
+        con cualquier configuración de pesos, incluso poniendo a cero el peso de
+        la fatiga: el algoritmo no estaba optimizando volumen en absoluto, que es
+        justo la variable que más manda en la relación estímulo/fatiga.
+
+        Con una banda, la periodización sigue garantizada (el volumen baja de
+        bloque en bloque) pero el AG conserva margen real de búsqueda dentro de
+        cada semana.
+        """
+        lo = int(max(1, lo))
+        hi = int(max(lo, hi))
+        cur = int(s.series)
+        if lo <= cur <= hi:
+            return
+        self._ajustar_series_hacia(s, lo if cur < lo else hi, max_mov=max_mov)
 
     def _ajustar_series_hacia(self, s, objetivo: int, max_mov: int = 2) -> None:
         """

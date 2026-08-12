@@ -8,6 +8,7 @@ import time
 from typing import List, Tuple, Dict
 
 from modelos import SemanaPlan, Plan12Semanas
+from epley_utils import estimulo_serie, reps_efectivas, saturar
 
 # =========================
 # Configuración de debug EE
@@ -1604,168 +1605,89 @@ class FitnessGAMixin:
 
 
 
-    def imprimir_diagnostico(self,costos, plan: Plan12Semanas):
+    def imprimir_diagnostico(self, plan: Plan12Semanas, costos: dict | None = None):
+        """
+        Informe de estímulo vs fatiga del plan elegido.
+
+        Antes este método era inalcanzable por tres motivos a la vez: su firma
+        era `(self, costos, plan)` pero se le llamaba con un solo argumento,
+        usaba una variable `reps_prom_semana` que no existía en su ámbito, y
+        emitía los resultados con el prefijo "EvolucionEntrenamiento - ", que
+        el filtro de `print` del módulo descarta fuera de modo debug. El
+        `try/except` de quien lo llamaba se tragaba el error, así que el
+        desglose nunca llegaba a verse.
+        """
         self._dbg("imprimir_diagnostico", "desglosando costos del mejor plan.", nivel=logging.INFO)
-        fat_musc, fat_snc, progreso = 0.0, 0.0, 0.0
-        for idx, s in enumerate(plan.semanas):
-            fm, snc = self._fatiga_semana(s)
-            fat_musc += fm
-            fat_snc += snc
-            progreso += self._progreso_fuerza_semana(idx, s)
 
-        pen_trend = self._penalizar_tendencias_y_suavidad(plan.semanas)
-        pen_block = self._penalizar_objetivos_por_bloque(plan.semanas, reps_prom_semana)
-        pen_intra = self._penalizar_distribucion_intra(plan.semanas)
-        pen_micro = self._penalizar_microtendencias_intrablock(plan.semanas)
-        pen_taper = self._penalizar_taper_final(plan.semanas, probar_1rm=False)
-        pen_smooth = self._suavizado_L2(plan.semanas)
-        pen_h_over = self._penalizar_exceso_dias_H(plan.semanas)
-        pen_roles = self._penalizar_orden_roles(plan.semanas)
-        pen_effsets = self._penalizar_series_efectivas(plan.semanas)
-        pen_deload = self._penalizar_deload_intermedio(plan.semanas)
-        pen_por_rol = self._penalizar_progresion_por_rol(plan.semanas)
+        met = costos if isinstance(costos, dict) else self._calcular_metricas_er5(plan)
+        pen = met.get("penalizaciones", {})
 
-        w_fm, w_snc, w_prog = 1.0, 35.0, 26.0
-        costo = (w_fm * fat_musc + w_snc * fat_snc - w_prog * progreso
-                 + pen_trend + pen_block + pen_intra + pen_micro + pen_taper + pen_smooth
-                 + pen_h_over + pen_roles + pen_effsets + pen_deload + pen_por_rol)
+        def linea(ch="─", n=78):
+            print(ch * n)
 
-        print(f"EvolucionEntrenamiento - imprimir_diagnostico: fat_musc={fat_musc:.2f} | fat_snc={fat_snc:.2f} | progreso={progreso:.2f}")
-        print(f"EvolucionEntrenamiento - imprimir_diagnostico: pen_trend={pen_trend:.2f} | pen_block={pen_block:.2f} | pen_intra={pen_intra:.2f}")
-        print(f"EvolucionEntrenamiento - imprimir_diagnostico: pen_micro={pen_micro:.2f} | pen_taper={pen_taper:.2f} | pen_smooth={pen_smooth:.2f}")
-        print(f"EvolucionEntrenamiento - imprimir_diagnostico: pen_roles={pen_roles:.2f} | pen_effsets={pen_effsets:.2f} | pen_deload={pen_deload:.2f} | pen_por_rol={pen_por_rol:.2f}")
-        print(f"EvolucionEntrenamiento - imprimir_diagnostico: costo_total={costo:.2f}")
-        self._dbg(
-            "resumen",
-            "diagnostico",
-            "fat_musc=%.2f | fat_snc=%.2f | progreso=%.2f",
-            costos["fat_musc"], costos["fat_snc"], costos["progreso"],
-        )
-        self._dbg(
-            "resumen",
-            "diagnostico",
-            "pen_trend=%.2f | pen_block=%.2f | pen_intra=%.2f",
-            costos["pen_trend"], costos["pen_block"], costos["pen_intra"],
-        )
-        def mejores_planes(self, k: int = 3, usar_pareto: bool = True):
-            """
-            Devuelve hasta k planes buenos para compararlos.
-            Por defecto usa el frente de Pareto final (si existe),
-            ordenados por el score 'factible primero'.
-            """
-            # 1) Fuente de datos
-            src = getattr(self, "_ultima_pareto", None) if usar_pareto else None
-            if src is None:
-                pobl = getattr(self, "_ultima_poblacion", None)
-                if not pobl:
-                    return []
-                src = [
-                    {"plan": ind, "met": self._calcular_metricas_er5(ind)}
-                    for ind in pobl
-                ]
+        linea("═")
+        print("DIAGNÓSTICO — ESTÍMULO vs FATIGA")
+        linea("═")
 
-            # 2) Ordenar por tu scalarizado 'factible-primero'
-            def score(x):
-                return self._score_factible_primero(x["met"])
+        print(f"  Estímulo hipertrofia (S_hyp)   {met['S_hyp']:10.2f}")
+        print(f"  Estímulo fuerza      (S_str)   {met['S_str']:10.2f}")
+        print(f"  Reps efectivas totales         {met['reps_efectivas']:10.1f}")
+        print(f"  Progreso de fuerza             {met['progreso']:10.2f}")
+        print(f"  Tonelaje relativo              {met['ton_total']:10.2f}")
+        print()
+        print(f"  Fatiga muscular acumulada      {met['fat_musc']:10.2f}   (techo {self.FAT_M_TECHO:.0f})")
+        print(f"  Fatiga SNC acumulada           {met['fat_snc']:10.2f}   (techo {self.FAT_SNC_TECHO:.0f})")
+        print()
+        print(f"  Beneficio normalizado          {met['beneficio']:10.3f}")
+        print(f"  Coste (fatiga) normalizado     {met['coste']:10.3f}")
+        print(f"  EFICIENCIA estímulo/fatiga     {met['eficiencia']:10.3f}")
+        print(f"  score_fp                       {met['score_fp']:10.3f}")
 
-            ordenados = sorted(src, key=score, reverse=True)
+        if pen:
+            print()
+            print("  Penalizaciones (0 = sin violación):")
+            for k, v in sorted(pen.items(), key=lambda kv: -abs(kv[1])):
+                if abs(v) > 1e-9:
+                    print(f"    {k:<12} {v:9.2f}")
 
-            # 3) Devolver sólo los planes (sin las métricas, si quieres)
-            planes = [x["plan"] for x in ordenados[:k]]
-            return planes
+        # Reparto del estímulo por bloque: deja ver si el macrociclo cumple su
+        # función (hipertrofia al principio, fuerza al final).
+        print()
+        print("  Estímulo por bloque:")
+        for ini, fin, etiqueta in ((0, 4, "B1 acumulación"),
+                                   (4, 8, "B2 fuerza"),
+                                   (8, 12, "B3 peaking")):
+            hyp = fue = 0.0
+            for s in plan.semanas[ini:fin]:
+                sets, pct, rpe_obj, _, reps = self._get_arrays_semana(s)
+                for st, p, r, rep in zip(sets, pct, rpe_obj, reps):
+                    h, f = estimulo_serie(int(st), int(rep), float(r), float(p))
+                    hyp += h
+                    fue += f
+            print(f"    {etiqueta:<16} hipertrofia={hyp:8.2f}   fuerza={fue:7.2f}")
+        linea("═")
 
-        def _penalizar_objetivos_por_bloque(
-            self,
-            semanas: List[SemanaPlan],
-            reps_prom_semana: Optional[List[float]] = None,
-        ) -> float:
-            """
-            Penaliza que cada bloque no respete su objetivo de rango de repeticiones.
+    def mejores_planes(self, k: int = 3, usar_pareto: bool = True):
+        """
+        Devuelve hasta k planes buenos para compararlos.
+        Por defecto usa el frente de Pareto final (si existe),
+        ordenados por el score 'factible primero'.
 
-            Bloque 1 (W1-4): Hipertrofia → 6–12 reps de media.
-            Bloque 2 (W5-8): Fuerza      → 3–6 reps de media (penal fuerte si >8).
-            Bloque 3 (W9-12): Peaking    → 1–4 reps de media.
+        (Estaba definido dentro de `imprimir_diagnostico`, de modo que nunca
+        llegó a ser un método de la clase; se promociona aquí.)
+        """
+        src = getattr(self, "_ultima_pareto", None) if usar_pareto else None
+        if src is None:
+            pobl = getattr(self, "_ultima_poblacion", None)
+            if not pobl:
+                return []
+            src = [
+                {"plan": ind, "met": self._calcular_metricas_er5(ind)}
+                for ind in pobl
+            ]
 
-            Si reps_prom_semana es None, se calcula aquí con _get_arrays_semana.
-            """
-            if len(semanas) != 12:
-                return 0.0
-
-            # ------------------------------------------------------------------
-            # Si no nos pasaron reps_prom_semana, la calculamos aquí
-            # ------------------------------------------------------------------
-            if reps_prom_semana is None or len(reps_prom_semana) != 12:
-                reps_prom_semana = []
-                for s in semanas:
-                    sets, pct, rpe_obj, rpe_real, reps = self._get_arrays_semana(s)
-                    total_sets = sum(int(x) for x in sets)
-                    if total_sets > 0:
-                        reps_acum = sum(int(st) * int(r) for st, r in zip(sets, reps))
-                        reps_prom = reps_acum / float(total_sets) if reps_acum > 0 else float(getattr(s, "reps", 0.0))
-                    else:
-                        reps_prom = float(getattr(s, "reps", 0.0))
-                    reps_prom_semana.append(reps_prom)
-
-            def penal_rango(rep: float, low: float, high: float,
-                            peso_suave: float = 1.0,
-                            peso_fuerte: float = 3.0) -> float:
-                """
-                Penalización suave si se sale poco del rango,
-                y fuerte si se sale mucho (>1 rep de margen).
-                """
-                if low <= rep <= high:
-                    return 0.0
-
-                if rep < low:
-                    delta = low - rep
-                else:
-                    delta = rep - high
-
-                if delta <= 1.0:
-                    return peso_suave * delta
-                # si se sale más de 1 rep, añadimos extra
-                return peso_suave + peso_fuerte * (delta - 1.0)
-
-            pen = 0.0
-
-            # --------------------------------------------------
-            # Bloque 1 – Hipertrofia (W1–4, índices 0–3)
-            # 6–12 reps de media, penalización suave.
-            # --------------------------------------------------
-            for i in range(0, 4):
-                rep = float(reps_prom_semana[i])
-                pen += penal_rango(rep, 6.0, 12.0,
-                                peso_suave=0.5,
-                                peso_fuerte=1.5)
-
-            # --------------------------------------------------
-            # Bloque 2 – Fuerza (W5–8, índices 4–7)
-            # 3–6 reps de media, penal fuerte fuera de rango.
-            # Castigo extra si sigue en 8–12 (hipertrofia 2.0).
-            # --------------------------------------------------
-            for i in range(4, 8):
-                rep = float(reps_prom_semana[i])
-                p = penal_rango(rep, 3.0, 6.0,
-                                peso_suave=2.0,
-                                peso_fuerte=5.0)
-
-                if rep > 8.0:
-                    # castigo extra por seguir en hipertrofia
-                    p += (rep - 8.0) * 4.0
-
-                pen += p
-
-            # --------------------------------------------------
-            # Bloque 3 – Peaking (W9–12, índices 8–11)
-            # 1–4 reps de media, rango estrecho.
-            # --------------------------------------------------
-            for i in range(8, 12):
-                rep = float(reps_prom_semana[i])
-                pen += penal_rango(rep, 1.0, 4.0,
-                                peso_suave=1.5,
-                                peso_fuerte=4.0)
-
-            return pen
+        ordenados = sorted(src, key=lambda x: self._score_factible_primero(x["met"]), reverse=True)
+        return [x["plan"] for x in ordenados[:k]]
 
     def _penalizar_bloques(self, plan) -> float:
         """
@@ -1972,46 +1894,88 @@ class FitnessGAMixin:
         return pen
 
 
+    # ---- Escalas de referencia del modelo estímulo/fatiga -------------------
+    # Están medidas sobre planes reales generados por este mismo AG, no
+    # inventadas: cada NORM está en el orden de magnitud de lo que marca un
+    # plan típico (dentro de un factor 2 según el perfil), de modo que los
+    # pesos del score signifiquen lo que dicen.
+    #
+    # La versión anterior usaba PROG_NORM=50 con valores reales de ~1.2 y
+    # SHOCK_NORM=10000 con valores reales de ~11: esos términos aportaban
+    # literalmente el 0 % del score por mucho que su coeficiente pareciera
+    # grande. Si se tocan estas constantes hay que volver a medir, porque
+    # sólo cuenta el cociente peso/NORM.
+    HYP_NORM      = 195.0   # estímulo hipertrófico acumulado (12 semanas)
+    STR_NORM      = 39.0    # estímulo de fuerza acumulado
+    PROG_NORM     = 1.3     # progreso de fuerza estimado
+    FAT_M_NORM    = 700.0   # fatiga muscular acumulada
+    FAT_SNC_NORM  = 25.0    # fatiga SNC acumulada (escala del modelo "suave")
+    SHOCK_NORM    = 5.0
+    TAPER_NORM    = 10.0
+
+    # Techos fisiológicos: por encima de esto la fatiga deja de ser "coste" y
+    # pasa a ser sobreentrenamiento, así que se castiga de forma cuadrática.
+    # Se sitúan justo por encima de lo que marca un plan bien construido, para
+    # que el muro actúe en cuanto el plan empieza a degradarse.
+    FAT_M_TECHO   = 700.0
+    FAT_SNC_TECHO = 26.0
+
+    # Saturación semanal del estímulo (rendimientos decrecientes, MEV→MRV).
+    # Cuanto más bajos, antes deja de pagar el volumen extra.
+    SAT_HYP_SEMANA = 15.0
+    SAT_STR_SEMANA = 4.0
+
+    # Pesos por defecto: réplica del perfil "equilibrado" para quien instancie
+    # la clase sin pasar por `__init__` (ver PERFILES_OBJETIVO, que es la
+    # fuente de verdad y los sobreescribe por instancia con `objetivo=...`).
+    # No están puestos a ojo: salen de barrer el compromiso estímulo/fatiga
+    # midiendo también los indicadores de fuerza.
+    #
+    # AVISO sobre el compromiso, medido y no supuesto: la fatiga del SNC
+    # procede casi por completo del trabajo ≥80 %1RM, que es exactamente el
+    # que desarrolla la fuerza máxima. Son la misma palanca, así que ningún
+    # ajuste baja la fatiga del SNC y sube la fuerza a la vez; lo que sí se
+    # puede mejorar —y es lo que se optimiza— es el estímulo obtenido por
+    # cada unidad de fatiga.
+    W_HYP, W_STR, W_PROG = 1.0, 1.0, 0.6
+    W_FAT_M, W_FAT_SNC = 2.8, 2.8
+
     def _calcular_metricas_er5(self, plan: Plan12Semanas) -> dict:
         """
         EvolucionEntrenamiento - _calcular_metricas_er5:
 
-        - Sincroniza %1RM–reps–RPE en todo el plan.
-        - Calcula:
-            S_total (estímulo tipo ER5),
-            fatiga muscular total,
-            fatiga SNC total,
-            progreso de fuerza,
-            tonelaje total,
-            series y reps promedio por semana.
-        - Define vector multiobjetivo f orientado a MAXIMIZAR:
-            f1 = S_total                          (↑ estímulo útil)
-            f2 = -exceso_fatiga_muscular          (↑ acepta fatiga hasta un techo)
-            f3 = -exceso_fatiga_snc               (↑ idem pero para SNC)
-            f4 = -Shock_intersemanal              (↓ saltos semana a semana)
-            f5 = score_taper (0–10)               (taper correcto en W12)
-            f6 = -(pen_soft + 4·pen_hard)         (↓ violaciones de estructura)
-            f7 = progreso_total                    (↑ progreso de fuerza estimado)
+        Evalúa un plan bajo el criterio "máximo estímulo por unidad de fatiga".
 
-        - pen_soft incluye (sin shock):
-            pen_trend   → tendencias/suavidad global
-            pen_bloques → respeto estructura macro por bloques
-            pen_block   → reps/objetivo por bloque
-            pen_roles   → separación H/M/L
-            pen_micro   → microtendencias intra-bloque
-            pen_taper   → coherencia del taper
+        MODELO DE ESTÍMULO (ver `epley_utils`)
+        --------------------------------------
+        Cada serie aporta dos estímulos distintos, calculados con
+        `estimulo_serie`:
+        - hipertrofia: reps EFECTIVAS (las ~5 previas al fallo) × campana de
+          eficiencia centrada en ~75 %1RM.
+        - fuerza: exposición a carga alta × calidad (RIR≈2 es lo óptimo).
 
-        - pen_hard incluye cosas “peligrosas” como singles en M/L, etc.
+        El estímulo semanal pasa por `saturar()` (rendimientos decrecientes).
+        Esto es lo que crea un óptimo interior: la fatiga sigue creciendo de
+        forma lineal/convexa con cada serie, pero el estímulo se aplana, así
+        que amontonar volumen deja de compensar. Sin saturación la razón
+        estímulo/fatiga sería casi constante y al AG le daría igual el volumen.
+
+        VECTOR MULTIOBJETIVO (todo a MAXIMIZAR)
+        ---------------------------------------
+            f1 = S_hyp_total        ↑ estímulo de hipertrofia
+            f2 = S_str_total        ↑ estímulo de fuerza
+            f3 = -fatiga_muscular   ↓ fatiga muscular (minimización REAL)
+            f4 = -fatiga_snc        ↓ fatiga del SNC (minimización REAL)
+            f5 = -shock             ↓ saltos bruscos entre semanas
+            f6 = -(pen_soft + 4·pen_hard)
+            f7 = progreso_total     ↑ progresión de fuerza a lo largo del macro
+
+        f3 y f4 son la fatiga COMPLETA con signo negativo, no sólo el exceso
+        sobre un techo. Antes eran `-max(0, fatiga - techo)`, y como los planes
+        se quedaban por debajo del techo (fat_musc≈674 < 700, snc≈46 < 80) el
+        término valía exactamente 0: el algoritmo no tenía ningún incentivo
+        para reducir fatiga, que es justo lo contrario de lo que se le pide.
         """
-
-        # --- Constantes de referencia / normalización para el score escalar ---
-        ER5_NORM     = 300.0
-        FAT_M_NORM   = 700.0   # rango “normal” de fatiga muscular
-        FAT_SNC_NORM = 80.0    # rango “normal” de fatiga SNC
-        SHOCK_NORM   = 10000.0
-        TAPER_NORM   = 10.0
-        PROG_NORM    = 50.0    # escala razonable para progreso_total (ajustable)
-
         # 0) Coherencia fisiológica en TODO el plan
         self._sincronizar_plan_pct_vs_reps_rpe(plan)
 
@@ -2023,7 +1987,9 @@ class FitnessGAMixin:
         series_por_semana: list[float] = []
         reps_prom_semana: list[float]  = []
 
-        S_total        = 0.0   # estímulo tipo ER5
+        S_hyp_total    = 0.0   # estímulo hipertrofia (saturado por semana)
+        S_str_total    = 0.0   # estímulo fuerza (saturado por semana)
+        reps_ef_total  = 0.0   # reps efectivas crudas (para diagnóstico)
         fat_musc_total = 0.0
         fat_snc_total  = 0.0
         progreso_total = 0.0
@@ -2032,11 +1998,12 @@ class FitnessGAMixin:
         # -------- 1) Recorrido semana a semana --------
         for idx, s in enumerate(plan.semanas):
             sets, pct, rpe_obj, rpe_real, reps = self._get_arrays_semana(s)
-            total_sets = sum(int(x) for x in sets)  # sin max(1, ...)
+            total_sets = sum(int(x) for x in sets)
 
-            stim_sem   = 0.0
-            ton_sem    = 0.0
-            reps_acum  = 0.0
+            hyp_bruto = 0.0
+            str_bruto = 0.0
+            ton_sem   = 0.0
+            reps_acum = 0.0
 
             for st, p, r, rep in zip(sets, pct, rpe_obj, reps):
                 st_int  = int(st)
@@ -2044,36 +2011,39 @@ class FitnessGAMixin:
                 if st_int <= 0:
                     continue
 
-                # ER5: reps por encima de 5 (no negativas)
-                er5 = max(0, rep_int - 5)
-                intensidad_rel = float(p) / 100.0
+                hip, fue = estimulo_serie(st_int, rep_int, float(r), float(p))
+                hyp_bruto += hip
+                str_bruto += fue
 
-                stim_sem  += st_int * er5 * (intensidad_rel ** 1.2)
-                ton_sem   += st_int * rep_int * intensidad_rel
+                reps_ef_total += st_int * reps_efectivas(rep_int, float(r))
+                ton_sem   += st_int * rep_int * (float(p) / 100.0)
                 reps_acum += st_int * rep_int
 
-            if total_sets > 0:
-                reps_prom = reps_acum / float(total_sets)
-            else:
-                reps_prom = float(s.reps)
+            # Rendimientos decrecientes dentro de la semana
+            hyp_sem = saturar(hyp_bruto, self.SAT_HYP_SEMANA)
+            str_sem = saturar(str_bruto, self.SAT_STR_SEMANA)
 
-            S_total   += stim_sem
-            ton_total += ton_sem
+            reps_prom = reps_acum / float(total_sets) if total_sets > 0 else float(s.reps)
+
+            S_hyp_total += hyp_sem
+            S_str_total += str_sem
+            ton_total   += ton_sem
             series_por_semana.append(float(total_sets))
             reps_prom_semana.append(reps_prom)
 
             fm, snc = self._fatiga_semana(s)
             fat_musc_total += fm
             fat_snc_total  += snc
-            progreso_total += self._progreso_fuerza_semana(idx, s)
+            prog_sem = self._progreso_fuerza_semana(idx, s)
+            progreso_total += prog_sem
 
-            # Log por semana (útil para depuración fina)
             self._dbg(
                 "_calcular_metricas_er5",
                 (
-                    f"semana {idx+1:02d}: sets={total_sets}, stim_sem={stim_sem:.2f}, "
-                    f"ton_sem={ton_sem:.2f}, reps_prom={reps_prom:.2f}, "
-                    f"fm={fm:.2f}, snc={snc:.2f}, prog_sem={self._progreso_fuerza_semana(idx, s):.3f}"
+                    f"semana {idx+1:02d}: sets={total_sets}, hyp={hyp_sem:.2f} "
+                    f"(bruto {hyp_bruto:.2f}), str={str_sem:.2f} (bruto {str_bruto:.2f}), "
+                    f"reps_prom={reps_prom:.2f}, fm={fm:.2f}, snc={snc:.2f}, "
+                    f"prog_sem={prog_sem:.3f}"
                 )
             )
 
@@ -2087,14 +2057,21 @@ class FitnessGAMixin:
         pen_micro   = self._penalizar_microtendencias_intrablock(plan.semanas)
         pen_taper   = self._penalizar_taper_final(plan.semanas, probar_1rm=False)
 
-        # Shock NO entra en pen_soft: es objetivo explícito (f4)
+        # Penalizaciones que ya estaban escritas pero que NUNCA se llamaban
+        # desde el fitness (sólo desde `imprimir_diagnostico`, que además
+        # estaba roto). Son precisamente las que gobiernan la gestión de
+        # fatiga, así que sin ellas el plan no podía cuidar la recuperación:
+        pen_macro   = self._penalizar_tendencia_macro(plan.semanas)   # tendencia por bloque + estímulo mínimo
+        pen_deload  = self._penalizar_deload_intermedio(plan.semanas) # descargas W4/W8
+        pen_effsets = self._penalizar_series_efectivas(plan.semanas)  # series efectivas dentro de MEV–MRV
+        pen_diasH   = self._penalizar_exceso_dias_H(plan.semanas)     # demasiados días pesados → SNC
+        pen_rir     = self._penalizar_incoherencia_rir(plan.semanas)  # RIR coherente con fase/rol
+
+        # Shock NO entra en pen_soft: es objetivo explícito (f5)
         pen_soft = (
-            pen_trend +
-            pen_bloques +
-            pen_block +
-            pen_roles +
-            pen_micro +
-            pen_taper
+            pen_trend + pen_bloques + pen_block + pen_roles +
+            pen_micro + pen_taper + pen_macro + pen_deload +
+            pen_effsets + pen_diasH + pen_rir
         )
 
         # Suavizamos la magnitud de las penalizaciones suaves
@@ -2103,98 +2080,106 @@ class FitnessGAMixin:
         # Hard-guards: cosas que directamente no quieres (singles M/L, etc.)
         pen_hard = pen_singles
 
-        # ---------- Shock como objetivo explícito ----------
         shock_cost  = pen_shock
         score_taper = self._bonus_taper(plan)  # ~0..10
 
-        # ---------- 3) Exceso de fatiga (queremos “zona amarilla”, no cero) ----------
-        exceso_fm  = max(0.0, fat_musc_total - FAT_M_NORM)
-        exceso_snc = max(0.0, fat_snc_total  - FAT_SNC_NORM)
-
-        # ---------- 4) Objetivos crudos (multiobjetivo) ----------
-        f1 = S_total               # ↑ estímulo útil
-        f2 = -exceso_fm            # 0 si fatiga ≤ FAT_M_NORM, negativo si te pasas
-        f3 = -exceso_snc           # idem para SNC
-        f4 = -shock_cost           # menos shocks → mejor
-        f5 = score_taper           # 0–10, más es mejor
-        f6 = -(pen_soft + 4.0 * pen_hard)  # menos violaciones → mejor
-        f7 = progreso_total        # ↑ progreso fuerza
+        # ---------- 3) Objetivos crudos (multiobjetivo, todo a maximizar) ----------
+        f1 = S_hyp_total
+        f2 = S_str_total
+        f3 = -fat_musc_total
+        f4 = -fat_snc_total
+        f5 = -shock_cost
+        f6 = -(pen_soft + 4.0 * pen_hard)
+        f7 = progreso_total
 
         f_vec = (f1, f2, f3, f4, f5, f6, f7)
 
-        # ---------- 5) Score escalar AUXILIAR (para selección Factible-Primero) ----------
-        f1n = f1 / ER5_NORM
-        # f2 y f3 ya son negativos o 0, los normalizamos por la misma referencia:
-        f2n = f2 / FAT_M_NORM if FAT_M_NORM > 0 else 0.0
-        f3n = f3 / FAT_SNC_NORM if FAT_SNC_NORM > 0 else 0.0
-        f4n = f4 / SHOCK_NORM
-        f5n = f5 / TAPER_NORM
-        f7n = f7 / PROG_NORM if PROG_NORM > 0 else 0.0
+        # ---------- 4) Escalar auxiliar (selección Factible-Primero) ----------
+        # Beneficio y coste normalizados a la MISMA escala, para que la razón
+        # estímulo/fatiga tenga sentido y ambos lados compitan de verdad.
+        hyp_n   = S_hyp_total / self.HYP_NORM
+        str_n   = S_str_total / self.STR_NORM
+        prog_n  = progreso_total / self.PROG_NORM
+        fatm_n  = fat_musc_total / self.FAT_M_NORM
+        fatsnc_n = fat_snc_total / self.FAT_SNC_NORM
 
-        # Aquí priorizamos:
-        # - estímulo (f1n) y progreso (f7n),
-        # - shock/taper con peso moderado,
-        # - fatigas solo como freno cuando se exceden (f2n,f3n son <=0),
-        # - penalizaciones suaves/duras como “freno de emergencia”.
+        beneficio = self.W_HYP * hyp_n + self.W_STR * str_n + self.W_PROG * prog_n
+        coste     = self.W_FAT_M * fatm_n + self.W_FAT_SNC * fatsnc_n
+
+        # Muro cuadrático por encima del techo fisiológico: pasar de ahí es
+        # sobreentrenar, no "entrenar más".
+        exceso_fm  = max(0.0, fat_musc_total - self.FAT_M_TECHO) / self.FAT_M_NORM
+        exceso_snc = max(0.0, fat_snc_total - self.FAT_SNC_TECHO) / self.FAT_SNC_NORM
+        muro = 3.0 * (exceso_fm ** 2) + 4.0 * (exceso_snc ** 2)
+
         score_fp = (
-            1.2 * f1n +        # estímulo
-            1.8 * f7n +        # progreso de fuerza (muy importante)
-            0.4 * f4n +        # suavidad / pocos shocks
-            0.5 * f5n +        # buen taper
-            0.3 * f2n +        # exceso de fatiga muscular (<=0, resta cuando hay mucho exceso)
-            0.3 * f3n -        # exceso de fatiga SNC
-            0.003 * pen_soft - # estructura rara → resta un poco
-            0.03  * pen_hard   # violaciones duras → resta más
+            beneficio
+            - coste
+            - muro
+            + 0.4 * (f5 / self.SHOCK_NORM)      # suavidad / pocos shocks
+            + 0.5 * (score_taper / self.TAPER_NORM)
+            - 0.003 * pen_soft
+            - 0.03  * pen_hard
         )
+
+        # Eficiencia explícita: es la magnitud que el usuario quiere maximizar.
+        eficiencia = beneficio / max(1e-9, coste)
 
         # ---------- Logs resumen ----------
         self._dbg(
             "_calcular_metricas_er5",
             (
                 "penalizaciones: trend={:.2f}, bloques={:.2f}, block={:.2f}, "
-                "roles={:.2f}, singles={:.2f}, shock={:.2f}, micro={:.2f}, "
-                "taper={:.2f}, pen_soft={:.2f}, pen_hard={:.2f}"
+                "roles={:.2f}, macro={:.2f}, deload={:.2f}, effsets={:.2f}, "
+                "diasH={:.2f}, rir={:.2f}, singles={:.2f}, shock={:.2f}, "
+                "micro={:.2f}, taper={:.2f}, pen_soft={:.2f}, pen_hard={:.2f}"
             ).format(
-                pen_trend, pen_bloques, pen_block, pen_roles,
-                pen_singles, pen_shock, pen_micro, pen_taper,
-                pen_soft, pen_hard
+                pen_trend, pen_bloques, pen_block, pen_roles, pen_macro,
+                pen_deload, pen_effsets, pen_diasH, pen_rir, pen_singles,
+                pen_shock, pen_micro, pen_taper, pen_soft, pen_hard
             )
         )
 
         self._dbg(
             "_calcular_metricas_er5",
             (
-                "resumen métricas: S_total={:.2f}, ton_total={:.2f}, "
+                "resumen: S_hyp={:.2f}, S_str={:.2f}, reps_ef={:.1f}, ton={:.2f}, "
                 "fat_musc={:.2f}, fat_snc={:.2f}, progreso={:.2f}, "
-                "shock_cost={:.2f}, score_taper={:.2f}, "
-                "f=({}, {}, {}, {}, {}, {}, {}), score_fp={:.3f}"
+                "eficiencia={:.3f}, score_fp={:.3f}"
             ).format(
-                S_total, ton_total, fat_musc_total, fat_snc_total,
-                progreso_total, shock_cost, score_taper,
-                f1, f2, f3, f4, f5, f6, f7, score_fp
+                S_hyp_total, S_str_total, reps_ef_total, ton_total,
+                fat_musc_total, fat_snc_total, progreso_total,
+                eficiencia, score_fp
             ),
             nivel=logging.INFO,
-        )
-
-        self._dbg(
-            "_calcular_metricas_er5",
-            "series_por_semana=" + str(series_por_semana) +
-            ", reps_prom_semana=" + str(reps_prom_semana)
         )
 
         met = {
             "f":                 f_vec,
             "score_fp":          score_fp,
-            "S_total":           S_total,
+            "S_hyp":             S_hyp_total,
+            "S_str":             S_str_total,
+            # Se conserva "S_total" por compatibilidad con código que lo lea.
+            "S_total":           S_hyp_total + S_str_total,
+            "reps_efectivas":    reps_ef_total,
             "ton_total":         ton_total,
             "fat_musc":          fat_musc_total,
             "fat_snc":           fat_snc_total,
             "progreso":          progreso_total,
+            "eficiencia":        eficiencia,
+            "beneficio":         beneficio,
+            "coste":             coste,
             "series_por_semana": series_por_semana,
             "reps_prom_semana":  reps_prom_semana,
             "shock_cost":        shock_cost,
             "pen_soft":          pen_soft,
             "pen_hard":          pen_hard,
+            "penalizaciones": {
+                "trend": pen_trend, "bloques": pen_bloques, "block": pen_block,
+                "roles": pen_roles, "macro": pen_macro, "deload": pen_deload,
+                "effsets": pen_effsets, "diasH": pen_diasH, "rir": pen_rir,
+                "singles": pen_singles, "micro": pen_micro, "taper": pen_taper,
+            },
         }
 
         self._metricas_last = met

@@ -233,6 +233,54 @@ class EvolucionEntrenamiento(GeneracionDistribMixin, FitnessGAMixin, Penalizacio
 
     RPE_SET_MINIMO = (6.0, 6.5)
 
+    # ── Perfiles de objetivo ──────────────────────────────────────────────
+    # Generar un plan es un problema multiobjetivo con un compromiso real:
+    # el trabajo pesado construye la fuerza Y produce la fatiga del SNC, así
+    # que no existe un plan que maximice la fuerza y minimice esa fatiga a la
+    # vez. En lugar de esconder esa decisión dentro de constantes, se elige
+    # de forma explícita al construir el objeto.
+    #
+    # Cada perfil ajusta los pesos del escalar y la saturación del estímulo:
+    #   W_HYP/W_STR/W_PROG → cuánto vale el estímulo (masa / fuerza / progresión)
+    #   W_FAT_M/W_FAT_SNC  → cuánto pesa cada tipo de fatiga
+    #   SAT_*_SEMANA       → a partir de qué volumen semanal deja de compensar
+    PERFILES_OBJETIVO = {
+        # POR DEFECTO. Presiona con fuerza AMBAS fatigas a la vez. Medido
+        # sobre 4 semillas frente al comportamiento anterior: misma fatiga
+        # muscular y de SNC, +10 % de repeticiones efectivas y +5 %/+11 % de
+        # eficiencia, manteniendo la progresión de fuerza. Apretar los dos
+        # costes obliga al algoritmo a buscar configuraciones realmente
+        # eficientes en vez de limitarse a mover coste de un eje al otro.
+        "equilibrado": {
+            "W_HYP": 1.0, "W_STR": 1.0, "W_PROG": 0.6,
+            "W_FAT_M": 2.8, "W_FAT_SNC": 2.8,
+            "SAT_HYP_SEMANA": 15.0, "SAT_STR_SEMANA": 4.0,
+        },
+        # Prioriza fuerza máxima: +9 % de progresión y +5 % de series ≥85 %,
+        # a cambio de ~+6 % de fatiga muscular y ~+15 % de la del SNC.
+        "fuerza": {
+            "W_HYP": 0.7, "W_STR": 1.4, "W_PROG": 1.0,
+            "W_FAT_M": 2.0, "W_FAT_SNC": 0.8,
+            "SAT_HYP_SEMANA": 14.0, "SAT_STR_SEMANA": 6.0,
+        },
+        # Prioriza masa muscular: más reps efectivas en la ventana de
+        # hipertrofia y −23 % de fatiga del SNC, pero renuncia al trabajo
+        # máximo (−37 % de series ≥85 %), así que no sirve para pico de fuerza.
+        "hipertrofia": {
+            "W_HYP": 1.4, "W_STR": 0.6, "W_PROG": 0.3,
+            "W_FAT_M": 2.2, "W_FAT_SNC": 1.6,
+            "SAT_HYP_SEMANA": 20.0, "SAT_STR_SEMANA": 3.5,
+        },
+        # Máxima recuperabilidad: para volúmenes de trabajo bajos o vuelta
+        # tras una lesión. Baja la fatiga en términos absolutos y cuesta
+        # series pesadas.
+        "minima_fatiga": {
+            "W_HYP": 1.0, "W_STR": 1.0, "W_PROG": 0.6,
+            "W_FAT_M": 3.6, "W_FAT_SNC": 3.6,
+            "SAT_HYP_SEMANA": 12.0, "SAT_STR_SEMANA": 3.5,
+        },
+    }
+
     def __init__(
         self,
         patron: str = "ampliado",
@@ -244,6 +292,7 @@ class EvolucionEntrenamiento(GeneracionDistribMixin, FitnessGAMixin, Penalizacio
         nivel_usuario: str = "intermedio",
         modo_rpe: str = "ampliado",  # DEFAULT correcto
         usar_deload_intermedio: bool = True,
+        objetivo: str = "equilibrado",
     ):
         self.patron = patron
         self.poblacion = poblacion
@@ -254,6 +303,23 @@ class EvolucionEntrenamiento(GeneracionDistribMixin, FitnessGAMixin, Penalizacio
         # Acepta sólo valores válidos; si no, cae a "ampliado"
         self.modo_rpe = modo_rpe if modo_rpe in ("minimo", "ampliado") else "ampliado"
         self.usar_deload_intermedio = usar_deload_intermedio
+
+        # ---- Modelos de fatiga ----
+        # "suave"/"mixto" en lugar de "original" a propósito: la variante
+        # original usa funciones ESCALÓN (p. ej. el coste SNC salta de 0 a 0.8
+        # justo al cruzar el 80 %1RM y vale 0 por debajo). Un escalón no da
+        # gradiente: mover una sesión del 79 % al 81 % cambia el coste de golpe
+        # y dentro de cada tramo el AG no distingue nada, así que no puede
+        # "afinar" la fatiga. Las variantes continuas interpolan y permiten
+        # que la búsqueda encuentre el mejor punto estímulo/fatiga.
+        self.modelo_fatiga_muscular = "mixto"  # combina factor RPE y factor RIR
+        self.modelo_fatiga_snc = "suave"       # interpolación lineal continua
+
+        # ---- Perfil de objetivo: fija los pesos del compromiso estímulo/fatiga ----
+        self.objetivo = objetivo if objetivo in self.PERFILES_OBJETIVO else "equilibrado"
+        for atributo, valor in self.PERFILES_OBJETIVO[self.objetivo].items():
+            setattr(self, atributo, valor)
+
         # ---- Parámetros para shock intersemanal (salto entre semanas) ----
         self._EPS_DIV = 1e-6              # Para evitar división por cero
         self._LAMBDA_SHOCK_VOL = 10.0     # Peso del shock de volumen (tonelaje)

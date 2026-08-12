@@ -385,10 +385,7 @@ def imprimir_resumen_final(plan, ag=None, incluir_diagnostico: bool = True):
             imprimir_por_bloques(plan, ag)  # ← antes no pasaba ag
 
             if incluir_diagnostico and ag is not None:
-                try:
-                    ag.imprimir_diagnostico(plan)
-                except Exception:
-                    pass
+                _imprimir_diagnostico_seguro(ag, plan)
         finally:
             builtins.print = _tmp
     else:
@@ -396,10 +393,21 @@ def imprimir_resumen_final(plan, ag=None, incluir_diagnostico: bool = True):
         imprimir_por_bloques(plan, ag)
 
         if incluir_diagnostico and ag is not None:
-            try:
-                ag.imprimir_diagnostico(plan)
-            except Exception:
-                pass
+            _imprimir_diagnostico_seguro(ag, plan)
+
+
+def _imprimir_diagnostico_seguro(ag, plan):
+    """
+    Imprime el diagnóstico sin tumbar la ejecución, pero SIN silenciar el
+    error: antes esto era un `except Exception: pass` y por eso un fallo real
+    del diagnóstico (firma incorrecta y variable indefinida) pasó inadvertido
+    mientras el plan se imprimía con normalidad.
+    """
+    try:
+        ag.imprimir_diagnostico(plan)
+    except Exception as e:
+        _log(logging.WARNING, "resumen_final",
+             f"no se pudo imprimir el diagnóstico ({type(e).__name__}: {e}).")
 
 # ── ETA y Autoajuste por tiempo ──────────────────────────────────────────────
 def _fmt_duracion(seg):
@@ -449,6 +457,7 @@ def _estimar_tiempo_calibracion(params: dict, frac_poblacion: float = 0.25, gens
         nivel_usuario=params.get("nivel_usuario", "avanzado"),
         modo_rpe=params.get("modo_rpe", "ampliado"),
         usar_deload_intermedio=params.get("usar_deload_intermedio", True),
+        objetivo=params.get("objetivo", "equilibrado"),
     )
     t0 = time.time()
     _ = ag_cal.evolucionar()
@@ -587,6 +596,8 @@ def main():
         "nivel_usuario": "avanzado",
         "modo_rpe": "ampliado",
         "usar_deload_intermedio": True,
+        # Compromiso estímulo/fatiga: equilibrado | fuerza | hipertrofia | minima_fatiga
+        "objetivo": os.environ.get("EE_OBJETIVO", "equilibrado"),
     }
     poblacion, generaciones, _ = _autoajustar_por_tiempo(
         params_base, minutos_obj=minutos_obj, max_minutos=max_minutos

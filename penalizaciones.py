@@ -484,9 +484,24 @@ class PenalizacionesMixin:
         return pen
 
         
-    def _penalizar_tendencias_y_suavidad(self,
-                                        semanas,
-                                        metricas: dict | None = None) -> float:
+    def _penalizar_tendencia_macro(self,
+                                   semanas,
+                                   metricas: dict | None = None) -> float:
+        """
+        Tendencia MACRO del mesociclo (una escala por encima de la suavidad
+        semana a semana que mide `_penalizar_tendencias_y_suavidad`):
+
+        - Series medias por bloque decrecientes: B1 ≥ B2 ≥ B3.
+        - Intensidad media por bloque creciente: B1 ≤ B2 ≤ B3.
+        - Reps medias por bloque decrecientes: B1 ≥ B2 ≥ B3.
+        - Estímulo mínimo por bloque (STIM_MIN) para que "descargar" no sea
+          gratis: sin este suelo, minimizar fatiga premiaría el plan vacío.
+
+        Antes se llamaba `_penalizar_tendencias_y_suavidad`, lo que la hacía
+        inalcanzable por dos motivos: una segunda definición homónima más
+        abajo en esta misma clase la sobrescribía, y `FitnessGAMixin` gana en
+        el MRO. Con el nombre propio ya entra en el fitness.
+        """
         pen = 0.0
         b1 = [semanas[i] for i in self.BLOQUES[1]["idx"]]
         b2 = [semanas[i] for i in self.BLOQUES[2]["idx"]]
@@ -553,87 +568,16 @@ class PenalizacionesMixin:
 
         return float(pen)
 
-    # -------------------------------------------------------------------------
-    # 1) Penalizar exceso de H en acumulación + días L ligeros + día de velocidad
-    # -------------------------------------------------------------------------
-    def _penalizar_roles(self, semanas):
-        pen = 0.0
-
-        for i, sem in enumerate(semanas):
-            sets_H = sum(s.sets for s in sem.sesiones if s.rol == "H")
-            sets_M = sum(s.sets for s in sem.sesiones if s.rol == "M")
-            sets_L = sum(s.sets for s in sem.sesiones if s.rol == "L")
-
-            # 1) ACUMULACIÓN (W1-4): castiga exceso de H y premia M/L 65-72 %
-            if i < 4:
-                pen += max(0, (sets_H - (sets_M + sets_L))) * 1.2
-                for ses in sem.sesiones:
-                    if ses.rol in ("M", "L") and 65 <= ses.pct1RM <= 72:
-                        pen -= ses.sets * 0.8
-
-            # 2) FUERZA (W5-8): L debe ser realmente ligero
-            if 4 <= i < 8:
-                for ses in sem.sesiones:
-                    if ses.rol == "L":
-                        if ses.pct1RM >= 73:            # demasiado % para L
-                            pen += (ses.pct1RM - 72) * 0.6
-                        if ses.RPE >= 7:                # RPE alto para L
-                            pen += (ses.RPE - 6.5) * 1.0
-
-            # 3) PEAK (W9-11): día de velocidad obligatorio (≤65 %, ≤2 reps, RPE ≤7)
-            if 8 <= i < 11:
-                hay_vel = any(
-                    (s.pct1RM <= 65 and s.reps <= 2 and s.RPE <= 7)
-                    for s in sem.sesiones
-                )
-                if not hay_vel:
-                    pen += 7.0
-
-        return pen
-
-   
-
-    def _penalizar_tendencias_y_suavidad(self, semanas):
-        pen = 0.0
-        for i in range(1, len(semanas)):
-            prev, sem = semanas[i - 1], semanas[i]
-
-            Δsets = abs(sem.total_sets() - prev.total_sets())
-            Δreps = abs(sem.reps_prom - prev.reps_prom)
-
-            if not self._cambio_de_fase(i):            # dentro del mismo bloque
-                pen += max(0, Δsets - 3) * 0.8         # castiga saltos >3 series
-                pen += max(0, Δreps - 1.0) * 2.0       # castiga saltos >1 rep media
-            else:                                      # entre bloques
-                pen += max(0, Δsets - 6) * 0.2         # más permisivo
-
-        return pen
-
-    def _penalizar_bloques(self, plan):
-        semanas = plan.semanas
-        pen = 0.0
-
-        # ---- Peaking & Taper ----
-        w11, w12 = semanas[10], semanas[11]
-        vol11, vol12 = w11.total_sets(), w12.total_sets()
-        drop = 1 - (vol12 / max(vol11, 1))
-
-        
-        if 0.15 <= drop <= 0.35:
-            pen -= 12.0
-        else:
-            pen += abs(drop - 0.50) * 12.0
-
-        # Top single @85-90 %, RPE 7-8.5, 1-2 reps
-        for s in w12.sesiones:
-            if "top" in (s.notas or "").lower():
-                if 85 <= s.pct1RM <= 90 and 7 <= s.RPE <= 8.5 and s.reps in (1, 2):
-                    pen -= 5.0
-                else:
-                    pen += 5.0
-
-        return pen
-
+    # NOTA: aquí vivían tres métodos (`_penalizar_roles`,
+    # `_penalizar_tendencias_y_suavidad` y `_penalizar_bloques`) escritos
+    # contra un modelo de datos que este proyecto no usa: llamaban a
+    # `semana.total_sets()`, `semana.reps_prom`, `sesion.pct1RM`, `sesion.RPE`,
+    # `sesion.notas` y `self._cambio_de_fase()`, ninguno de los cuales existe
+    # (`SemanaPlan.sesiones` es un entero, no una lista de objetos sesión).
+    # Cualquier llamada reventaba con AttributeError. Además sobrescribían por
+    # posición a las versiones buenas de esta misma clase. Se eliminan: la
+    # lógica equivalente y operativa vive en `_penalizar_orden_roles`,
+    # `_penalizar_tendencia_macro` (arriba) y `FitnessGAMixin._penalizar_bloques`.
 
     def _penalizar_taper_final(self, semanas, probar_1rm: bool = False) -> float:
         pen = 0.0
